@@ -1,0 +1,1 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=lgh.springboot.starter.hbase.config.HBaseClientAutoConfiguration
