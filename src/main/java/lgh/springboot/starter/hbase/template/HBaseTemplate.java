@@ -32,6 +32,7 @@ import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterList;
+import org.apache.hadoop.hbase.filter.PageFilter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -44,6 +45,8 @@ import lgh.springboot.starter.hbase.entity.HBaseEntityHelper;
 import lgh.springboot.starter.hbase.entity.HBaseEntityHelper.HBaseFieldInfo;
 import lgh.springboot.starter.hbase.entity.HBaseEntityHelper.HBaseTableInfo;
 import lgh.springboot.starter.hbase.exception.HBaseOperationException;
+import lgh.springboot.starter.hbase.helper.Pager;
+import lgh.springboot.starter.hbase.helper.Sort;
 import lgh.springboot.starter.hbase.utils.Convertor;
 import lgh.springboot.starter.hbase.utils.HBaseScanUtils;
 
@@ -360,7 +363,7 @@ public class HBaseTemplate {
             throw new HBaseOperationException(ex);
         }
     }
-    
+
     /**
      * 
      * @param <T> MUST has rowKey value
@@ -373,62 +376,106 @@ public class HBaseTemplate {
     }
 
     public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey) {
-        return query(type, startRowKey, endRowKey, null);
+        return query(type, startRowKey, endRowKey, null, null);
+    }
+
+    public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey,
+            Map<String, Object> filterFields) {
+        return query(type, startRowKey, endRowKey, filterFields, null);
+    }
+
+    public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey, Sort sort) {
+        return query(type, startRowKey, endRowKey, null, sort);
+    }
+
+    public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey,
+            Map<String, Object> filterFields, Sort sort) {
+        return query(type, startRowKey, endRowKey, filterFields, sort, null);
     }
 
     /**
+     * <pre>
+     *  if ( pager.page == 1 ){
+     *      startRowKey = normal start rowKey
+     *      endRowKey = normal end rowKey
+     *  } else {
+     *      // page > 1
+     *      if ( Sort.ASC ){
+     *          startRowKey = last page's last rowKey
+     *          endRowKey = normal end rowKey
+     *      } else {
+     *          startRowKey = normal end rowKey
+     *          endRowKey = lastPage's last rowKey;
+     *      }
+     *  }
+     * 
+     *  Example Code: 
+     *  
+     *   Sort sort = Sort.DESC.name().equalsIgnoreCase(orderby) ? Sort.DESC : Sort.ASC;
+     *   String startRowKey;
+     *   String endRowKey;
+     *   if (page == 1) {
+     *       startRowKey = RowKeyGenerator.generate(...);
+     *       endRowKey = RowKeyGenerator.generate(...);
+     *   } else {
+     *       if(Sort.ASC.equals(sort)) {
+     *           startRowKey = lastRowKey;
+     *           endRowKey = RowKeyGenerator.generate(...);
+     *       }else {
+     *           startRowKey = RowKeyGenerator.generate(...);
+     *           endRowKey = lastRowKey;
+     *       }
+     *   }
+     *   
+     *   List<ExampleEntity> results = hbaseTemplate.query(ExampleEntity.class, startRowKey, endRowKey, filterMap, sort, new Pager(page, pageSize));
+     * 
+     * </pre>
      * 
      * @param <T>
      * @param type
      * @param startRowKey
      * @param endRowKey
      * @param filterFields
+     * @param sort
+     * @param pager
      * @return
      */
     public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey,
-            Map<String, Object> filterFields) {
+            Map<String, Object> filterFields, Sort sort, Pager pager) {
         HBaseTableInfo tableInfo = HBaseEntityHelper.getTableInfo(type);
         Map<String, HBaseFieldInfo> fieldInfos = HBaseEntityHelper.getFieldInfo(type);
 
         try (Table table = connection.getTable(TableName.valueOf(tableInfo.getFullName()))) {
-            Scan scan = new Scan().withStartRow(Bytes.toBytes(startRowKey)).withStopRow(Bytes.toBytes(endRowKey));
+            Scan scan = new Scan();
 
-            if (filterFields != null && !filterFields.isEmpty()) {
-                List<Filter> filters = new ArrayList<>(filterFields.size());
-                for (Entry<String, Object> entry : filterFields.entrySet()) {
-                    Object val = entry.getValue();
-                    if (val == null) {
-                        continue;
-                    }
-
-                    String fieldName = entry.getKey();
-                    Class<?> fieldType = String.class;
-                    String key = fieldName;
-
-                    HBaseFieldInfo fieldInfo = getFieldInfo(fieldInfos, fieldName);
-                    byte[] value;
-                    if (fieldInfo != null) {
-                        fieldType = fieldInfo.getType();
-                        key = fieldInfo.getKey();
-                        if (fieldInfo.getType().equals(val.getClass())) {
-                            value = Convertor.convertFieldValueToHBaseBytes(val, fieldType);
-                        } else {
-                            // if filter value type is not field type, convert it to field type(only support
-                            // String)
-                            val = Convertor.convetStringToFieldType((String) val, fieldType);
-                            value = Convertor.convertFieldValueToHBaseBytes(val, fieldType);
-                        }
-                    } else {
-                        value = Bytes.toBytes(val.toString());
-                    }
-
-                    Filter filter = new SingleColumnValueFilter(Bytes.toBytes(tableInfo.getColumnFamily()),
-                            Bytes.toBytes(key), CompareOperator.EQUAL, value);
-                    filters.add(filter);
-
-                }
-                scan.setFilter(new FilterList(filters));
+            boolean isDESC = Sort.DESC.equals(sort);
+            if (isDESC) {
+                scan = scan.withStartRow(Bytes.toBytes(endRowKey)).withStopRow(Bytes.toBytes(startRowKey));
+                scan.setReversed(true);
+            } else {
+                scan = scan.withStartRow(Bytes.toBytes(startRowKey)).withStopRow(Bytes.toBytes(endRowKey));
             }
+
+            FilterList filterList = null;
+            if (filterFields != null && !filterFields.isEmpty()) {
+                filterList = new FilterList();
+                addFilters(filterList, filterFields, tableInfo.getColumnFamily(), fieldInfos);
+            }
+
+            if (pager != null) {
+                if (filterList == null) {
+                    filterList = new FilterList();
+                }
+                // NOTICE: PageFilter MUST add the end of filter list
+                int pageSize = pager.getPageSize();
+                pageSize = pager.getPage() == 1 ? pageSize : pageSize + 1;
+                filterList.addFilter(new PageFilter(pageSize));
+            }
+            if (filterList != null) {
+                scan.setFilter(filterList);
+            }
+
+            boolean filterFirstRow = pager != null && pager.getPage() > 1;
 
             ResultScanner results = table.getScanner(scan);
             List<T> list = new ArrayList<>();
@@ -438,12 +485,53 @@ public class HBaseTemplate {
                     setFieldValue(cell, t, fieldInfos);
                 }
                 t.setRowKey(Bytes.toString(result.getRow()));
+                if (filterFirstRow) {
+                    filterFirstRow = false;
+                    continue;
+                }
                 list.add(t);
             }
             return list;
         } catch (Exception ex) {
             logger.error(ex.getMessage(), ex);
             throw new HBaseOperationException(ex);
+        }
+    }
+
+    private void addFilters(FilterList filterList, Map<String, Object> filterFields, String columnFamily,
+            Map<String, HBaseFieldInfo> fieldInfos) {
+        if (filterFields != null && !filterFields.isEmpty()) {
+            for (Entry<String, Object> entry : filterFields.entrySet()) {
+                Object val = entry.getValue();
+                if (val == null) {
+                    continue;
+                }
+
+                String fieldName = entry.getKey();
+                Class<?> fieldType = String.class;
+                String key = fieldName;
+
+                HBaseFieldInfo fieldInfo = getFieldInfo(fieldInfos, fieldName);
+                byte[] value;
+                if (fieldInfo != null) {
+                    fieldType = fieldInfo.getType();
+                    key = fieldInfo.getKey();
+                    if (fieldInfo.getType().equals(val.getClass())) {
+                        value = Convertor.convertFieldValueToHBaseBytes(val, fieldType);
+                    } else {
+                        // if filter value type is not field type, convert it to field type(only support
+                        // String)
+                        val = Convertor.convetStringToFieldType((String) val, fieldType);
+                        value = Convertor.convertFieldValueToHBaseBytes(val, fieldType);
+                    }
+                } else {
+                    value = Bytes.toBytes(val.toString());
+                }
+
+                Filter filter = new SingleColumnValueFilter(Bytes.toBytes(columnFamily), Bytes.toBytes(key),
+                        CompareOperator.EQUAL, value);
+                filterList.addFilter(filter);
+            }
         }
     }
 

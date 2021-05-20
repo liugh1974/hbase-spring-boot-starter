@@ -85,6 +85,12 @@
             
             public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey, Map<String, Object> filterFields);
             
+             public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey, Sort sort);
+
+            public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey, Map<String, Object> filterFields, Sort sort);
+
+            public <T extends HBaseEntity> List<T> query(Class<T> type, String startRowKey, String endRowKey, Map<String, Object> filterFields, Sort sort, Pager pager)
+            
             public <T extends HBaseEntity> void delete(T t);
 
             如果以上方法不满足需求，可以通过 public Connection getConnection() 方法得到连接自己定义具体操作。
