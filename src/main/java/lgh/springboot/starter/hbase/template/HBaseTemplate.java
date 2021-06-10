@@ -448,12 +448,14 @@ public class HBaseTemplate {
         try (Table table = connection.getTable(TableName.valueOf(tableInfo.getFullName()))) {
             Scan scan = new Scan();
 
-            boolean isDESC = Sort.DESC.equals(sort);
-            if (isDESC) {
+            String latestRowKey;
+            if (Sort.DESC.equals(sort)) {
                 scan = scan.withStartRow(Bytes.toBytes(endRowKey)).withStopRow(Bytes.toBytes(startRowKey));
                 scan.setReversed(true);
+                latestRowKey = startRowKey;
             } else {
                 scan = scan.withStartRow(Bytes.toBytes(startRowKey)).withStopRow(Bytes.toBytes(endRowKey));
+                latestRowKey = endRowKey;
             }
 
             FilterList filterList = null;
@@ -480,22 +482,37 @@ public class HBaseTemplate {
             ResultScanner results = table.getScanner(scan);
             List<T> list = new ArrayList<>();
             for (Result result : results) {
-                T t = type.newInstance();
-                for (Cell cell : result.rawCells()) {
-                    setFieldValue(cell, t, fieldInfos);
-                }
-                t.setRowKey(Bytes.toString(result.getRow()));
                 if (filterFirstRow) {
                     filterFirstRow = false;
                     continue;
                 }
-                list.add(t);
+                
+                list.add(convertResult(result, type, fieldInfos));
             }
+            
+            if (list.size() < pager.getPageSize()) {
+                Get get = new Get(Bytes.toBytes(latestRowKey));
+                Result result = table.get(get);
+                if (!result.isEmpty()) {
+                    list.add(convertResult(result, type, fieldInfos));
+                }
+            }
+
             return list;
         } catch (Exception ex) {
             logger.error(ex.getMessage(), ex);
             throw new HBaseOperationException(ex);
         }
+    }
+    
+    private <T extends HBaseEntity> T convertResult(Result result, Class<T> type,
+            Map<String, HBaseFieldInfo> fieldInfos) throws InstantiationException, IllegalAccessException {
+        T t = type.newInstance();
+        for (Cell cell : result.rawCells()) {
+            setFieldValue(cell, t, fieldInfos);
+        }
+        t.setRowKey(Bytes.toString(result.getRow()));
+        return t;
     }
 
     private void addFilters(FilterList filterList, Map<String, Object> filterFields, String columnFamily,
