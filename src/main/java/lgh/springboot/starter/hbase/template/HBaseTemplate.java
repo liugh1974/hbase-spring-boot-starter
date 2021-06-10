@@ -311,15 +311,11 @@ public class HBaseTemplate {
         try (Table table = connection.getTable(TableName.valueOf(tableInfo.getFullName()))) {
             Get get = new Get(Bytes.toBytes(rowKey));
             Result result = table.get(get);
-            if (result == null || result.isEmpty()) {
+            if (result.isEmpty()) {
                 return null;
             }
 
-            T t = type.newInstance();
-            for (Cell cell : result.rawCells()) {
-                setFieldValue(cell, t, fieldInfos);
-            }
-            t.setRowKey(rowKey);
+            T t = convertResult(result, type, fieldInfos);
             if (logger.isTraceEnabled()) {
                 logger.trace("Get table: {} rowKey: {} result: {}", tableInfo.getFullName(), rowKey, t);
             }
@@ -347,11 +343,7 @@ public class HBaseTemplate {
 
             List<T> list = new ArrayList<>(results.length);
             for (Result result : results) {
-                T t = type.newInstance();
-                for (Cell cell : result.rawCells()) {
-                    setFieldValue(cell, t, fieldInfos);
-                }
-                t.setRowKey(Bytes.toString(result.getRow()));
+                T t = convertResult(result, type, fieldInfos);
                 if (logger.isTraceEnabled()) {
                     logger.trace("Get table: {} rowKey: {} result: {}", tableInfo.getFullName(), t.getRowKey(), t);
                 }
@@ -490,7 +482,7 @@ public class HBaseTemplate {
                 list.add(convertResult(result, type, fieldInfos));
             }
             
-            if (list.size() < pager.getPageSize()) {
+            if (pager != null && list.size() < pager.getPageSize()) {
                 Get get = new Get(Bytes.toBytes(latestRowKey));
                 Result result = table.get(get);
                 if (!result.isEmpty()) {
